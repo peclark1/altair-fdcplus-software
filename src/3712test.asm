@@ -1,19 +1,19 @@
 ;=============================================================================
-; 3712TEST.COM
+; 3712TEST.COM v0.2
 ;
 ; Read-only CP/M diagnostic for Altair FDC+ firmware 1.8 Drive Type 8.
 ;
 ; The Drive Type 8 firmware emulates the iCOM/Pertec FD3712 interface used by
-; Mike Douglas's FDC+3712 software.  Controller access is deliberately direct;
+; Mike Douglas's FDC+3712 software. Controller access is deliberately direct;
 ; CP/M BDOS is used only for console output.
 ;
-; First test:
-;   - reset controller
-;   - select drive 0 / sector 1
-;   - restore to track 0
-;   - read track 0 / sector 1 (128 bytes)
-;   - dump the sector and compare its first 16 bytes with the supplied
-;     CPM22v1.0-FDC+3712-48K.dsk image
+; v0.2:
+;   - optional decimal track/sector arguments: 3712TEST [track [sector]]
+;   - defaults to track 0, sector 1
+;   - reads/dumps the requested 128-byte sector
+;   - recognizes Mike Douglas's boot-sector signature when reading T0/S1
+;   - directly reads and displays the CP/M 2.2 directory from track 2 using
+;     the standard 8-inch SSSD skew table and DPB from Mike's BIOS.ASM
 ;
 ; There are NO write or format commands in this program.
 ;
@@ -22,6 +22,9 @@
 ;
 ; Controller command sequence and register definitions are derived from
 ; Mike Douglas's FDC+3712 PROM.ASM v1.0 (2021-09-11).
+; Disk layout values are derived from his BIOS.ASM:
+;   26 x 128-byte sectors/track, OFF=2, DRM=63, 1K blocks, AL0=C0h,
+;   standard IBM-3740/CP/M interleave of 6.
 ;=============================================================================
 
         ORG     0100H
@@ -30,9 +33,12 @@
 BDOS            EQU     0005H
 BDOS_CONOUT     EQU     02H
 BDOS_PRINT      EQU     09H
+CMDTAIL_LEN     EQU     0080H
+CMDTAIL         EQU     0081H
 
 CR              EQU     0DH
 LF              EQU     0AH
+SPACE           EQU     20H
 
 ; FD3712 controller commands
 C_STATUS        EQU     00H
@@ -47,7 +53,7 @@ C_RDBUF         EQU     40H
 C_SHIFT         EQU     41H
 C_RESET         EQU     81H
 
-; Controller status bits
+; Controller status bits used by Mike's driver
 S_BUSY          EQU     01H
 S_SKERR         EQU     02H
 S_CRCERR        EQU     08H
@@ -61,6 +67,10 @@ DATAIN          EQU     08H
 DATAOUT         EQU     09H
 
 SECLEN          EQU     128
+NUMTRK          EQU     77
+NUMSEC          EQU     26
+DIRTRACK        EQU     2
+DIRSECS         EQU     16              ; 64 entries x 32 bytes / 128
 
 ;-----------------------------------------------------------------------------
 ; Program entry
@@ -71,9 +81,27 @@ START:
 
         XOR     A
         LD      (DRVNUM),A              ; drive 0
-        LD      (TRKNUM),A              ; track 0
+        LD      (TRKNUM),A              ; default track 0
         INC     A
-        LD      (SECNUM),A              ; sector 1
+        LD      (SECNUM),A              ; default sector 1
+
+        CALL    PARSE_ARGS
+        JR      NC,ARGS_OK
+        LD      DE,MSG_USAGE
+        CALL    PRINT_STR
+        RET
+
+ARGS_OK:
+        LD      DE,MSG_TARGET1
+        CALL    PRINT_STR
+        LD      A,(TRKNUM)
+        CALL    PRINT_DEC2
+        LD      DE,MSG_TARGET2
+        CALL    PRINT_STR
+        LD      A,(SECNUM)
+        CALL    PRINT_DEC2
+        LD      DE,MSG_EOL_ONLY
+        CALL    PRINT_STR
 
         LD      DE,MSG_INIT
         CALL    PRINT_STR
@@ -86,8 +114,7 @@ START:
         AND     S_FATAL
         JR      NZ,INIT_FAILED
 
-        LD      DE,MSG_READ
-        CALL    PRINT_STR
+        CALL    PRINT_READ_LABEL
         CALL    READ_SECTOR
         JR      C,CMD_TIMEOUT
         LD      (READ_STATUS),A
@@ -101,15 +128,30 @@ START:
         CALL    PRINT_STR
         CALL    DUMP_SECTOR
 
+        LD      A,(TRKNUM)
+        OR      A
+        JR      NZ,SKIP_SIGNATURE
+        LD      A,(SECNUM)
+        CP      1
+        JR      NZ,SKIP_SIGNATURE
+
         CALL    CHECK_SIGNATURE
         JR      NZ,SIG_BAD
         LD      DE,MSG_SIG_OK
         CALL    PRINT_STR
-        JR      EXIT_OK
+        JR      DO_DIRECTORY
 
 SIG_BAD:
         LD      DE,MSG_SIG_BAD
         CALL    PRINT_STR
+        JR      DO_DIRECTORY
+
+SKIP_SIGNATURE:
+        LD      DE,MSG_SIG_SKIP
+        CALL    PRINT_STR
+
+DO_DIRECTORY:
+        CALL    LIST_DIRECTORY
         JR      EXIT_OK
 
 INIT_FAILED:
@@ -132,6 +174,115 @@ EXIT_OK:
         CALL    PRINT_STR
 EXIT:
         RET                             ; return to CCP
+
+;=============================================================================
+; Command tail parsing
+;=============================================================================
+
+; Syntax: 3712TEST [track [sector]]
+; Decimal track 0-76, sector 1-26. No arguments defaults to T0/S1.
+; Returns carry on syntax/range error.
+PARSE_ARGS:
+        LD      A,(CMDTAIL_LEN)
+        LD      B,A
+        LD      HL,CMDTAIL
+        CALL    SKIP_SPACES
+        LD      A,B
+        OR      A
+        RET     Z
+
+        CALL    PARSE_DEC8
+        RET     C
+        CP      NUMTRK
+        JR      NC,PARSE_ARGS_BAD
+        LD      (TRKNUM),A
+
+        CALL    SKIP_SPACES
+        LD      A,B
+        OR      A
+        RET     Z
+
+        CALL    PARSE_DEC8
+        RET     C
+        OR      A
+        JR      Z,PARSE_ARGS_BAD
+        CP      NUMSEC+1
+        JR      NC,PARSE_ARGS_BAD
+        LD      (SECNUM),A
+
+        CALL    SKIP_SPACES
+        LD      A,B
+        OR      A
+        JR      NZ,PARSE_ARGS_BAD
+        OR      A                       ; clear carry
+        RET
+
+PARSE_ARGS_BAD:
+        SCF
+        RET
+
+SKIP_SPACES:
+        LD      A,B
+        OR      A
+        RET     Z
+        LD      A,(HL)
+        CP      SPACE
+        RET     NZ
+        INC     HL
+        DEC     B
+        JR      SKIP_SPACES
+
+; Parse an unsigned decimal byte from HL/B command-tail cursor.
+; Leaves HL/B positioned at first non-digit. Returns A=value, carry on error.
+PARSE_DEC8:
+        LD      A,B
+        OR      A
+        JR      Z,PARSE_DEC_BAD
+        LD      A,(HL)
+        CP      '0'
+        JR      C,PARSE_DEC_BAD
+        CP      '9'+1
+        JR      NC,PARSE_DEC_BAD
+
+        LD      C,0
+PARSE_DEC_LOOP:
+        LD      A,B
+        OR      A
+        JR      Z,PARSE_DEC_DONE
+        LD      A,(HL)
+        CP      '0'
+        JR      C,PARSE_DEC_DONE
+        CP      '9'+1
+        JR      NC,PARSE_DEC_DONE
+        SUB     '0'
+        LD      E,A                     ; digit
+
+        LD      A,C                     ; value * 10 + digit
+        ADD     A,A                     ; *2
+        JR      C,PARSE_DEC_BAD
+        LD      D,A                     ; save *2
+        ADD     A,A                     ; *4
+        JR      C,PARSE_DEC_BAD
+        ADD     A,A                     ; *8
+        JR      C,PARSE_DEC_BAD
+        ADD     A,D                     ; *10
+        JR      C,PARSE_DEC_BAD
+        ADD     A,E
+        JR      C,PARSE_DEC_BAD
+        LD      C,A
+
+        INC     HL
+        DEC     B
+        JR      PARSE_DEC_LOOP
+
+PARSE_DEC_DONE:
+        LD      A,C
+        OR      A                       ; clear carry
+        RET
+
+PARSE_DEC_BAD:
+        SCF
+        RET
 
 ;=============================================================================
 ; FDC+3712 controller routines
@@ -245,7 +396,7 @@ SELECT_SECTOR:
         RET
 
 ; DO_CMD
-; Issue command in A, then wait for BUSY to clear.  Mike's original PROM waits
+; Issue command in A, then wait for BUSY to clear. Mike's original PROM waits
 ; indefinitely; this diagnostic adds a bounded timeout so CP/M can recover from
 ; an absent/misconfigured controller.
 ; Returns A=status with carry clear, or A=FF/carry set on timeout.
@@ -277,6 +428,182 @@ OUT_CMD:
         OUT     (CMDOUT),A
         XOR     A
         OUT     (CMDOUT),A
+        RET
+
+;=============================================================================
+; CP/M directory reader
+;=============================================================================
+
+; Mike's BIOS DPB reserves two tracks (OFF=2). With 64 directory entries and
+; two 1K directory blocks (AL0=C0h), the directory occupies 16 logical sectors
+; at the beginning of track 2. These are their physical sector numbers after
+; the standard 8-inch SSSD skew/interleave-6 translation.
+DIR_PHYS_SECTORS:
+        DB      01,07,13,19,25,05,11,17
+        DB      23,03,09,15,21,02,08,14
+
+LIST_DIRECTORY:
+        LD      DE,MSG_DIR_HEADER
+        CALL    PRINT_STR
+
+        LD      A,DIRTRACK
+        LD      (TRKNUM),A
+        XOR     A
+        LD      (DIR_COUNT),A
+
+        LD      HL,DIR_PHYS_SECTORS
+        LD      B,DIRSECS
+DIR_SECTOR_LOOP:
+        LD      A,(HL)
+        LD      (SECNUM),A
+        INC     HL
+        PUSH    HL
+        PUSH    BC
+
+        CALL    READ_SECTOR
+        JR      C,DIR_TIMEOUT
+        LD      (READ_STATUS),A
+        AND     S_FATAL
+        JR      NZ,DIR_READ_ERROR
+
+        CALL    PROCESS_DIR_SECTOR
+        POP     BC
+        POP     HL
+        DJNZ    DIR_SECTOR_LOOP
+
+        LD      A,(DIR_COUNT)
+        OR      A
+        JR      NZ,DIR_HAVE_FILES
+        LD      DE,MSG_DIR_EMPTY
+        CALL    PRINT_STR
+        RET
+
+DIR_HAVE_FILES:
+        LD      DE,MSG_DIR_TOTAL1
+        CALL    PRINT_STR
+        LD      A,(DIR_COUNT)
+        CALL    PRINT_DEC2
+        LD      DE,MSG_DIR_TOTAL2
+        CALL    PRINT_STR
+        RET
+
+DIR_TIMEOUT:
+        POP     BC
+        POP     HL
+        LD      DE,MSG_DIR_TIMEOUT1
+        CALL    PRINT_STR
+        CALL    PRINT_CURRENT_TS
+        LD      DE,MSG_DIR_TIMEOUT2
+        CALL    PRINT_STR
+        RET
+
+DIR_READ_ERROR:
+        LD      A,(READ_STATUS)
+        LD      (STATUS_TMP),A
+        POP     BC
+        POP     HL
+        LD      DE,MSG_DIR_ERROR1
+        CALL    PRINT_STR
+        CALL    PRINT_CURRENT_TS
+        LD      DE,MSG_DIR_ERROR2
+        CALL    PRINT_STR
+        LD      A,(STATUS_TMP)
+        CALL    PRINT_STATUS_LINE
+        RET
+
+; Process four 32-byte CP/M 2.2 directory entries in BUFFER.
+; We display valid user 0-15 entries whose extent number is zero. With EXM=0
+; on this disk, that yields one DIR-style line per file instead of repeating
+; subsequent extents of larger files.
+PROCESS_DIR_SECTOR:
+        LD      HL,BUFFER
+        LD      B,4
+PROCESS_DIR_ENTRY:
+        LD      A,(HL)
+        CP      0E5H                    ; deleted/unused
+        JR      Z,PROCESS_DIR_NEXT
+        CP      10H                     ; only CP/M users 0-15
+        JR      NC,PROCESS_DIR_NEXT
+        LD      (DIR_USER),A
+
+        PUSH    HL
+        LD      DE,12
+        ADD     HL,DE
+        LD      A,(HL)                  ; EX extent number
+        POP     HL
+        OR      A
+        JR      NZ,PROCESS_DIR_NEXT
+
+        PUSH    BC
+        CALL    PRINT_DIR_ENTRY
+        POP     BC
+        LD      A,(DIR_COUNT)
+        INC     A
+        LD      (DIR_COUNT),A
+
+PROCESS_DIR_NEXT:
+        LD      DE,32
+        ADD     HL,DE
+        DJNZ    PROCESS_DIR_ENTRY
+        RET
+
+; HL -> directory entry. Print: U00 FILENAME.EXT
+PRINT_DIR_ENTRY:
+        PUSH    HL
+
+        LD      A,'U'
+        CALL    PUTCHAR
+        LD      A,(DIR_USER)
+        CALL    PRINT_DEC2
+        LD      A,SPACE
+        CALL    PUTCHAR
+
+        INC     HL                      ; filename starts at +1
+        LD      B,8
+PRINT_DIR_NAME:
+        LD      A,(HL)
+        AND     7FH                     ; strip CP/M attribute high bit
+        CP      SPACE
+        JR      Z,PRINT_DIR_NAME_SKIP
+        CALL    PUTCHAR
+PRINT_DIR_NAME_SKIP:
+        INC     HL
+        DJNZ    PRINT_DIR_NAME
+
+        ; HL now points at three extension bytes. See whether extension exists.
+        PUSH    HL
+        LD      B,3
+PRINT_DIR_EXT_CHECK:
+        LD      A,(HL)
+        AND     7FH
+        CP      SPACE
+        JR      NZ,PRINT_DIR_EXT_YES
+        INC     HL
+        DJNZ    PRINT_DIR_EXT_CHECK
+        POP     HL
+        JR      PRINT_DIR_EOL
+
+PRINT_DIR_EXT_YES:
+        POP     HL
+        LD      A,'.'
+        CALL    PUTCHAR
+        LD      B,3
+PRINT_DIR_EXT:
+        LD      A,(HL)
+        AND     7FH
+        CP      SPACE
+        JR      Z,PRINT_DIR_EXT_SKIP
+        CALL    PUTCHAR
+PRINT_DIR_EXT_SKIP:
+        INC     HL
+        DJNZ    PRINT_DIR_EXT
+
+PRINT_DIR_EOL:
+        LD      A,CR
+        CALL    PUTCHAR
+        LD      A,LF
+        CALL    PUTCHAR
+        POP     HL
         RET
 
 ;=============================================================================
@@ -312,6 +639,23 @@ PRINT_NIBBLE:
         JR      C,PRINT_NIBBLE_GO
         ADD     A,7
 PRINT_NIBBLE_GO:
+        JP      PUTCHAR
+
+; Print A as two decimal digits (00-99).
+PRINT_DEC2:
+        LD      B,'0'
+PRINT_DEC2_TENS:
+        CP      10
+        JR      C,PRINT_DEC2_ONES
+        SUB     10
+        INC     B
+        JR      PRINT_DEC2_TENS
+PRINT_DEC2_ONES:
+        PUSH    AF
+        LD      A,B
+        CALL    PUTCHAR
+        POP     AF
+        ADD     A,'0'
         JP      PUTCHAR
 
 PRINT_STATUS_LINE:                      ; A=status
@@ -367,7 +711,31 @@ PRINT_NOTRDY:
         LD      DE,MSG_NOTRDY
         JP      PRINT_STR
 
-; 8 lines x 16 bytes.  Each line displays an offset, hex bytes, and ASCII.
+PRINT_READ_LABEL:
+        LD      DE,MSG_READ1
+        CALL    PRINT_STR
+        LD      A,(TRKNUM)
+        CALL    PRINT_DEC2
+        LD      DE,MSG_READ2
+        CALL    PRINT_STR
+        LD      A,(SECNUM)
+        CALL    PRINT_DEC2
+        LD      DE,MSG_READ3
+        JP      PRINT_STR
+
+PRINT_CURRENT_TS:
+        LD      A,'T'
+        CALL    PUTCHAR
+        LD      A,(TRKNUM)
+        CALL    PRINT_DEC2
+        LD      A,'/'
+        CALL    PUTCHAR
+        LD      A,'S'
+        CALL    PUTCHAR
+        LD      A,(SECNUM)
+        JP      PRINT_DEC2
+
+; 8 lines x 16 bytes. Each line displays an offset, hex bytes, and ASCII.
 DUMP_SECTOR:
         LD      HL,BUFFER
         LD      D,0                     ; offset 00,10,...70
@@ -380,20 +748,20 @@ DUMP_LINE:
         CALL    PRINT_HEX8
         LD      A,':'
         CALL    PUTCHAR
-        LD      A,' '
+        LD      A,SPACE
         CALL    PUTCHAR
 
         LD      C,16
 DUMP_HEX_LOOP:
         LD      A,(HL)
         CALL    PRINT_HEX8
-        LD      A,' '
+        LD      A,SPACE
         CALL    PUTCHAR
         INC     HL
         DEC     C
         JR      NZ,DUMP_HEX_LOOP
 
-        LD      A,' '
+        LD      A,SPACE
         CALL    PUTCHAR
         LD      A,'|'
         CALL    PUTCHAR
@@ -458,6 +826,8 @@ RESTORE_STATUS: DB      0
 SEEK_STATUS:    DB      0
 READ_STATUS:    DB      0
 STATUS_TMP:     DB      0
+DIR_USER:       DB      0
+DIR_COUNT:      DB      0
 
 EXPECTED_SIG:
         DB      31H,0F6H,00H,0EH,00H,0CDH,0CH,0F4H
@@ -465,12 +835,25 @@ EXPECTED_SIG:
 
 MSG_BANNER:
         DB      CR,LF
-        DB      'FDC+3712 TEST v0.1 - READ ONLY',CR,LF
-        DB      'Drive 0, IBM-3740 track 0 sector 1',CR,LF,'$'
+        DB      'FDC+3712 TEST v0.2 - READ ONLY',CR,LF
+        DB      'Drive 0, IBM-3740 / CP/M 2.2',CR,LF,'$'
+MSG_USAGE:
+        DB      CR,LF,'Usage: 3712TEST [track [sector]]',CR,LF
+        DB      '       track 0-76, sector 1-26 (decimal)',CR,LF,'$'
+MSG_TARGET1:
+        DB      'Requested sector: T$'
+MSG_TARGET2:
+        DB      '/S$'
+MSG_EOL_ONLY:
+        DB      CR,LF,'$'
 MSG_INIT:
         DB      CR,LF,'Reset/select/restore: $'
-MSG_READ:
-        DB      'Read T00/S01: $'
+MSG_READ1:
+        DB      'Read T$'
+MSG_READ2:
+        DB      '/S$'
+MSG_READ3:
+        DB      ': $'
 MSG_RAW:
         DB      'status=$'
 MSG_STATUS_FLAGS:
@@ -494,7 +877,9 @@ MSG_DUMP:
 MSG_SIG_OK:
         DB      CR,LF,'PASS: Mike Douglas CP/M boot-sector signature matched.',CR,LF,'$'
 MSG_SIG_BAD:
-        DB      CR,LF,'NOTE: sector read succeeded, but the known Mike CP/M signature did not match.',CR,LF,'$'
+        DB      CR,LF,'NOTE: T0/S1 read succeeded, but the known Mike CP/M signature did not match.',CR,LF,'$'
+MSG_SIG_SKIP:
+        DB      CR,LF,'Boot signature check skipped (only applies to T0/S1).',CR,LF,'$'
 MSG_INIT_FAIL:
         DB      'Initialization/restore returned an error. No sector read attempted.',CR,LF,'$'
 MSG_READ_FAIL:
@@ -502,6 +887,22 @@ MSG_READ_FAIL:
 MSG_TIMEOUT:
         DB      CR,LF,'TIMEOUT waiting for controller BUSY to clear.',CR,LF
         DB      'Check FDC+ firmware/type, cable, drive power, READY, and disk.',CR,LF,'$'
+MSG_DIR_HEADER:
+        DB      CR,LF,'CP/M DIRECTORY (direct FDC+3712 read, track 2):',CR,LF,'$'
+MSG_DIR_EMPTY:
+        DB      '(no active extent-0 directory entries found)',CR,LF,'$'
+MSG_DIR_TOTAL1:
+        DB      'Directory: $'
+MSG_DIR_TOTAL2:
+        DB      ' files listed.',CR,LF,'$'
+MSG_DIR_TIMEOUT1:
+        DB      CR,LF,'Directory read TIMEOUT at $'
+MSG_DIR_TIMEOUT2:
+        DB      '.',CR,LF,'$'
+MSG_DIR_ERROR1:
+        DB      CR,LF,'Directory read error at $'
+MSG_DIR_ERROR2:
+        DB      ': $'
 MSG_DONE:
         DB      CR,LF,'Read-only test complete. Returning to CP/M.',CR,LF,'$'
 
