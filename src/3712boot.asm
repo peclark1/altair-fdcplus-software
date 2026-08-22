@@ -1,5 +1,5 @@
 ;=============================================================================
-; 3712BOOT.COM v0.1
+; 3712BOOT.COM v0.2
 ;
 ; Safe load/verify experiment for Altair FDC+ firmware 1.8 Drive Type 8.
 ;
@@ -68,9 +68,9 @@ SECLEN          EQU     128
 NUMSEC          EQU     26
 
 ; Supplied 48K CP/M image layout
-CCPBASE         EQU     0A600H
-BIOSBASE        EQU     0BC00H
-LOADEND         EQU     0BF80H          ; first byte after loaded image
+CCPBASE         EQU     08000H         ; staging CCP address
+BIOSBASE        EQU     09600H         ; staging BIOS address
+LOADEND         EQU     09980H         ; first byte after staged image
 LOADLEN         EQU     LOADEND-CCPBASE ; 1980h = 6528 bytes
 EXPECTED_SUM    EQU     054B0H
 
@@ -101,15 +101,24 @@ START:
         LD      DE,MSG_EOL
         CALL    PRINT_STR
 
-        ; A600H-BF7FH must be entirely below the current BDOS.
-        ; BDOS at BF80H is just barely safe; anything lower is not.
+        ; Staging area 8000H-997FH must be below current CP/M.
         LD      HL,(BDOS_ADDR)
-        LD      A,H
-        CP      0BFH
+        LD      DE,LOADEND
+        OR      A
+        SBC     HL,DE
         JP      C,MEMORY_UNSAFE
-        JP      NZ,MEMORY_SAFE
-        LD      A,L
-        CP      080H
+
+        ; Also make sure the original CP/M stack is outside staging RAM.
+        LD      HL,(ENTRY_SP)
+        LD      DE,CCPBASE
+        OR      A
+        SBC     HL,DE
+        JP      C,MEMORY_SAFE
+
+        LD      HL,(ENTRY_SP)
+        LD      DE,LOADEND
+        OR      A
+        SBC     HL,DE
         JP      C,MEMORY_UNSAFE
 
 MEMORY_SAFE:
@@ -663,7 +672,7 @@ EXPECTED_BIOS_SIG:
 
 MSG_BANNER:
         DB      CR,LF
-        DB      'FDC+3712 BOOT TEST v0.1 - LOAD/VERIFY ONLY',CR,LF
+        DB      'FDC+3712 BOOT TEST v0.2 - STAGED LOAD/VERIFY',CR,LF
         DB      'Mike Douglas 48K CP/M 2.2 image; drive 0',CR,LF
         DB      'NO control transfer and NO disk writes.',CR,LF,'$'
 MSG_ENTRY_SP:
@@ -674,7 +683,7 @@ MSG_EOL:
         DB      CR,LF,'$'
 MSG_MEMORY_UNSAFE:
         DB      CR,LF
-        DB      'ABORT: current CP/M BDOS overlaps the A600-BF7F load area.',CR,LF
+        DB      'ABORT: current CP/M overlaps staging area 8000-997F.',CR,LF
         DB      'No floppy data was loaded.',CR,LF,'$'
 MSG_INIT:
         DB      CR,LF,'Reset/select/restore: $'
@@ -687,13 +696,13 @@ MSG_OK:
 MSG_LOADED1:
         DB      'Loaded $'
 MSG_LOADED2:
-        DB      ' sectors into A600-BF7F.',CR,LF,CR,LF,'$'
+        DB      ' sectors into staging area 8000-997F.',CR,LF,CR,LF,'$'
 MSG_CCP_SIG:
-        DB      'CCP signature at A600:  $'
+        DB      'CCP signature at 8000:  $'
 MSG_BIOS_SIG:
-        DB      'BIOS signature at BC00: $'
+        DB      'BIOS signature at 9600: $'
 MSG_CHECKSUM:
-        DB      'Checksum A600-BF7F:     $'
+        DB      'Checksum 8000-997F:     $'
 MSG_PASS:
         DB      'PASS',CR,LF,'$'
 MSG_FAIL:
