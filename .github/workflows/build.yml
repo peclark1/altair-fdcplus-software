@@ -24,3 +24,5 @@ jobs:
             build/3712test.sym
             build/3712BOOT.COM
             build/3712boot.sym
+            build/3712PREP.COM
+            build/3712prep.sym
