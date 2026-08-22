@@ -90,13 +90,13 @@ START:
         LD      (SECNUM),A              ; sector 1 default for restore
 
         CALL    INIT_CONTROLLER
-        JR      C,INIT_TIMEOUT
+        JP      C,INIT_TIMEOUT
         LD      (LAST_STATUS),A
         CALL    PRINT_STATUS_LINE
 
         LD      A,(LAST_STATUS)
         AND     S_FATAL
-        JR      NZ,INIT_FAILED
+        JP      NZ,INIT_FAILED
 
         XOR     A
         LD      (SECTOR_COUNT),A
@@ -111,7 +111,7 @@ START:
         LD      A,3
         LD      HL,CCPBASE+SECLEN        ; A680h
         CALL    LOAD_TRACK_IMAGE
-        JR      C,LOAD_FAILED
+        JP      C,LOAD_FAILED
         LD      DE,MSG_OK
         CALL    PRINT_STR
 
@@ -122,7 +122,7 @@ START:
         LD      HL,CCPBASE+SECLEN*(NUMSEC-1) ; B280h
         LD      A,1
         CALL    LOAD_TRACK_IMAGE
-        JR      C,LOAD_FAILED
+        JP      C,LOAD_FAILED
         LD      DE,MSG_OK
         CALL    PRINT_STR
 
@@ -140,7 +140,7 @@ START:
         LD      DE,EXPECTED_CCP_SIG
         LD      B,16
         CALL    COMPARE_BYTES
-        JR      NZ,VERIFY_FAILED_CCP
+        JP      NZ,VERIFY_FAILED_CCP
         LD      DE,MSG_PASS
         CALL    PRINT_STR
 
@@ -151,7 +151,7 @@ START:
         LD      DE,EXPECTED_BIOS_SIG
         LD      B,16
         CALL    COMPARE_BYTES
-        JR      NZ,VERIFY_FAILED_BIOS
+        JP      NZ,VERIFY_FAILED_BIOS
         LD      DE,MSG_PASS
         CALL    PRINT_STR
 
@@ -165,10 +165,10 @@ START:
 
         LD      A,D
         CP      54H
-        JR      NZ,VERIFY_FAILED_SUM
+        JP      NZ,VERIFY_FAILED_SUM
         LD      A,E
         CP      0B0H
-        JR      NZ,VERIFY_FAILED_SUM
+        JP      NZ,VERIFY_FAILED_SUM
         LD      DE,MSG_PASS_SUFFIX
         CALL    PRINT_STR
 
