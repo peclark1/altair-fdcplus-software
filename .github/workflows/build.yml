@@ -26,3 +26,7 @@ jobs:
             build/3712boot.sym
             build/3712PREP.COM
             build/3712prep.sym
+            build/3712SVC.BIN
+            build/3712svc.sym
+            build/3712HAND.COM
+            build/3712hand.sym
