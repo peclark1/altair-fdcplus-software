@@ -1,5 +1,5 @@
 ;=============================================================================
-; 3712TEST.COM v0.2
+; 3712TEST.COM v0.2.1
 ;
 ; Read-only CP/M diagnostic for Altair FDC+ firmware 1.8 Drive Type 8.
 ;
@@ -617,9 +617,11 @@ PRINT_STR:                              ; DE -> '$'-terminated text
 PUTCHAR:                                ; A=character
         PUSH    BC
         PUSH    DE
+        PUSH    HL                      ; BDOS does not guarantee HL preserved
         LD      E,A
         LD      C,BDOS_CONOUT
         CALL    BDOS
+        POP     HL
         POP     DE
         POP     BC
         RET
@@ -835,7 +837,7 @@ EXPECTED_SIG:
 
 MSG_BANNER:
         DB      CR,LF
-        DB      'FDC+3712 TEST v0.2 - READ ONLY',CR,LF
+        DB      'FDC+3712 TEST v0.2.1 - READ ONLY',CR,LF
         DB      'Drive 0, IBM-3740 / CP/M 2.2',CR,LF,'$'
 MSG_USAGE:
         DB      CR,LF,'Usage: 3712TEST [track [sector]]',CR,LF
