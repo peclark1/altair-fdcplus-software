@@ -78,9 +78,41 @@ EXPECTED_SUM    EQU     054B0H
 ; Program entry
 ;-----------------------------------------------------------------------------
 START:
+        ; Save the CP/M entry environment before touching the high TPA.
+        LD      (ENTRY_SP),SP
+        LD      (ORIG_SP),SP
+        LD      HL,(0006H)              ; target of JMP at CP/M BDOS vector 0005H
+        LD      (BDOS_ADDR),HL
+
+        ; Never depend on CP/M's incoming stack while loading A600H-BF7FH.
+        LD      SP,PRIVATE_STACK_TOP
+
         LD      DE,MSG_BANNER
         CALL    PRINT_STR
 
+        LD      DE,MSG_ENTRY_SP
+        CALL    PRINT_STR
+        LD      DE,(ENTRY_SP)
+        CALL    PRINT_HEX16_DE
+        LD      DE,MSG_BDOS_ADDR
+        CALL    PRINT_STR
+        LD      DE,(BDOS_ADDR)
+        CALL    PRINT_HEX16_DE
+        LD      DE,MSG_EOL
+        CALL    PRINT_STR
+
+        ; A600H-BF7FH must be entirely below the current BDOS.
+        ; BDOS at BF80H is just barely safe; anything lower is not.
+        LD      HL,(BDOS_ADDR)
+        LD      A,H
+        CP      0BFH
+        JP      C,MEMORY_UNSAFE
+        JP      NZ,MEMORY_SAFE
+        LD      A,L
+        CP      080H
+        JP      C,MEMORY_UNSAFE
+
+MEMORY_SAFE:
         LD      DE,MSG_INIT
         CALL    PRINT_STR
         XOR     A
@@ -174,17 +206,22 @@ START:
 
         LD      DE,MSG_SUCCESS
         CALL    PRINT_STR
-        RET
+        JP      EXIT_TO_CPM
+
+MEMORY_UNSAFE:
+        LD      DE,MSG_MEMORY_UNSAFE
+        CALL    PRINT_STR
+        JP      EXIT_TO_CPM
 
 INIT_TIMEOUT:
         LD      DE,MSG_INIT_TIMEOUT
         CALL    PRINT_STR
-        RET
+        JP      EXIT_TO_CPM
 
 INIT_FAILED:
         LD      DE,MSG_INIT_ERROR
         CALL    PRINT_STR
-        RET
+        JP      EXIT_TO_CPM
 
 LOAD_FAILED:
         LD      DE,MSG_LOAD_ERROR1
@@ -198,34 +235,38 @@ LOAD_FAILED:
         CALL    PRINT_STATUS_LINE
         LD      DE,MSG_ABORT
         CALL    PRINT_STR
-        RET
+        JP      EXIT_TO_CPM
 
 LOAD_FAILED_TIMEOUT:
         LD      DE,MSG_TIMEOUT
         CALL    PRINT_STR
         LD      DE,MSG_ABORT
         CALL    PRINT_STR
-        RET
+        JP      EXIT_TO_CPM
 
 VERIFY_FAILED_CCP:
         LD      DE,MSG_FAIL
         CALL    PRINT_STR
         LD      DE,MSG_VERIFY_CCP
         CALL    PRINT_STR
-        RET
+        JP      EXIT_TO_CPM
 
 VERIFY_FAILED_BIOS:
         LD      DE,MSG_FAIL
         CALL    PRINT_STR
         LD      DE,MSG_VERIFY_BIOS
         CALL    PRINT_STR
-        RET
+        JP      EXIT_TO_CPM
 
 VERIFY_FAILED_SUM:
         LD      DE,MSG_FAIL_SUFFIX
         CALL    PRINT_STR
         LD      DE,MSG_VERIFY_SUM
         CALL    PRINT_STR
+        JP      EXIT_TO_CPM
+
+EXIT_TO_CPM:
+        LD      SP,(ORIG_SP)
         RET
 
 ;=============================================================================
@@ -606,6 +647,9 @@ READ_STATUS:    DB      0
 LAST_STATUS:    DB      0
 LOAD_STATUS:    DB      0
 STATUS_TMP:     DB      0
+ENTRY_SP:       DW      0
+ORIG_SP:        DW      0
+BDOS_ADDR:      DW      0
 LOAD_ADDR:      DW      0
 DMA_PTR:        DW      0
 
@@ -622,6 +666,16 @@ MSG_BANNER:
         DB      'FDC+3712 BOOT TEST v0.1 - LOAD/VERIFY ONLY',CR,LF
         DB      'Mike Douglas 48K CP/M 2.2 image; drive 0',CR,LF
         DB      'NO control transfer and NO disk writes.',CR,LF,'$'
+MSG_ENTRY_SP:
+        DB      'CP/M entry SP=$'
+MSG_BDOS_ADDR:
+        DB      '  BDOS=$'
+MSG_EOL:
+        DB      CR,LF,'$'
+MSG_MEMORY_UNSAFE:
+        DB      CR,LF
+        DB      'ABORT: current CP/M BDOS overlaps the A600-BF7F load area.',CR,LF
+        DB      'No floppy data was loaded.',CR,LF,'$'
 MSG_INIT:
         DB      CR,LF,'Reset/select/restore: $'
 MSG_LOAD_T0:
@@ -691,5 +745,10 @@ MSG_WRTPRT:
         DB      'WRITE-PROTECT $'
 MSG_NOTRDY:
         DB      'NOT-READY $'
+
+; Private stack used while the high TPA is being replaced.
+PRIVATE_STACK:
+        DS      128,0
+PRIVATE_STACK_TOP:
 
         END     START
