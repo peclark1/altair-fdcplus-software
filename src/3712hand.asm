@@ -12,8 +12,9 @@
 ; Before the irreversible point this program:
 ;   * verifies the prepared 4F80H staged image
 ;   * verifies the two prepared cold/warm vectors
-;   * asks for an explicit 'B' confirmation
-;   * finalizes cold/warm vector semantics and verifies checksum 5005H
+;   * asks for an explicit 'P' confirmation to finalize the staged vectors
+;   * verifies checksum 5005H while the old CP/M is still intact
+;   * asks for a second explicit 'B' confirmation before the real handoff
 ;
 ; After the irreversible point it:
 ;   * stops using BDOS and disables interrupts
@@ -96,7 +97,7 @@ START:
         LD      C,BDOS_CONIN
         CALL    BDOS
         CALL    TO_UPPER
-        CP      'B'
+        CP      'P'
         JP      NZ,ABORT_USER
 
         ; Finalize only the staged BIOS. Active CP/M is still untouched here.
@@ -116,6 +117,16 @@ START:
         JP      NZ,FAIL_FINAL_SUM
         LD      DE,MSG_PASS_SUFFIX
         CALL    PRINT_STR
+
+        ; Second confirmation is deliberately after the 5005H check. This
+        ; allows the complete final staged patch to be bench-tested safely.
+        LD      DE,MSG_FINAL_CONFIRM
+        CALL    PRINT_STR
+        LD      C,BDOS_CONIN
+        CALL    BDOS
+        CALL    TO_UPPER
+        CP      'B'
+        JP      NZ,ABORT_FINAL
 
         LD      DE,MSG_COMMIT
         CALL    PRINT_STR
@@ -181,6 +192,12 @@ FAIL_FINAL_SUM:
         CALL    PRINT_STR
         LD      DE,MSG_ERR_FINAL_SUM
         JP      PRINT_AND_EXIT
+
+ABORT_FINAL:
+        CALL    RESTORE_PREP_VECTORS
+        LD      DE,MSG_ABORT_FINAL
+        CALL    PRINT_STR
+        JP      EXIT_TO_CPM
 
 ABORT_USER:
         LD      DE,MSG_ABORT
@@ -410,7 +427,12 @@ MSG_FAIL_SUFFIX:
 MSG_WARNING:
         DB      CR,LF
         DB      'Drive 0 must contain the validated 48K CP/M 2.2 disk.',CR,LF
-        DB      'Press B to begin the NON-RETURNING boot; any other key aborts: $'
+        DB      'Press P to test/finalize staged boot vectors; any other key aborts: $'
+
+MSG_FINAL_CONFIRM:
+        DB      CR,LF
+        DB      '5005 verified. Press B for the NON-RETURNING boot;',CR,LF
+        DB      'any other key restores the 4F80 prepared stage and aborts: $'
 
 MSG_COMMIT:
         DB      CR,LF
@@ -418,7 +440,11 @@ MSG_COMMIT:
         DB      CR,LF,'$'
 
 MSG_ABORT:
-        DB      CR,LF,'Aborted. Current CP/M was not changed.',CR,LF,'$'
+        DB      CR,LF,'Aborted before final-vector preparation. Current CP/M was not changed.',CR,LF,'$'
+MSG_ABORT_FINAL:
+        DB      CR,LF
+        DB      'Aborted after 5005 test. Prepared 4F80 vectors restored;',CR,LF
+        DB      'current CP/M was not changed.',CR,LF,'$'
 
 MSG_ERR_PREP_SUM:
         DB      'ABORT: expected 4F80. Run 3712BOOT then 3712PREP immediately first.'
